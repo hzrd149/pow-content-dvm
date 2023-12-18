@@ -1,0 +1,4 @@
+export const DMV_STATUS_KIND = 7000;
+
+export const DMV_CONTENT_REQUEST_KIND = 5300;
+export const DMV_CONTENT_RESULT_KIND = 6300;
