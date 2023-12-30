@@ -3,7 +3,7 @@ import dayjs from "dayjs";
 import { DMV_CONTENT_REQUEST_KIND, DMV_CONTENT_RESULT_KIND, DMV_STATUS_KIND } from "./const.js";
 import { RELAYS, ensureConnection, pool } from "./pool.js";
 import { Event, finishEvent, getPublicKey } from "nostr-tools";
-import { getInput, getInputParam, getInputTag, getRelays } from "./helpers/dvm.js";
+import { getExpirationTag, getInput, getInputParam, getInputTag, getRelays } from "./helpers/dvm.js";
 import { appDebug } from "./debug.js";
 import { NOSTR_PRIVATE_KEY } from "./env.js";
 import { unique } from "./helpers/array.js";
@@ -17,7 +17,25 @@ class PublicError extends Error {}
 async function sendResponse(request: Event<5300>, event: Event) {
   pool.publish(unique([...getRelays(request), ...RELAYS]), event).map((p) => p.catch((e) => {}));
 }
-async function sendError(request: Event<5300>, error: PublicError) {
+async function sendProcessing(request: Event<5300>, message?: string) {
+  const event = finishEvent(
+    {
+      kind: DMV_STATUS_KIND,
+      tags: [
+        ["e", request.id],
+        ["p", request.pubkey],
+        ["status", "processing"],
+        getExpirationTag(request) || ["expiration", String(dayjs().add(1, "hour").unix())],
+      ],
+      content: message || "",
+      created_at: dayjs().unix(),
+    },
+    NOSTR_PRIVATE_KEY,
+  );
+
+  await sendResponse(request, event);
+}
+async function sendError(request: Event<5300>, error: Error) {
   const event = finishEvent(
     {
       kind: DMV_STATUS_KIND,
@@ -25,6 +43,7 @@ async function sendError(request: Event<5300>, error: PublicError) {
         ["e", request.id],
         ["p", request.pubkey],
         ["status", "error"],
+        getExpirationTag(request) || ["expiration", String(dayjs().add(1, "hour").unix())],
       ],
       content: error.message,
       created_at: dayjs().unix(),
@@ -46,6 +65,7 @@ async function requestPayment(request: Event<5300>, msats: number) {
         ["amount", String(msats), invoice.paymentRequest],
         ["e", request.id],
         ["p", request.pubkey],
+        getExpirationTag(request) || ["expiration", String(dayjs().add(1, "hour").unix())],
       ],
       created_at: dayjs().unix(),
     },
@@ -141,6 +161,7 @@ async function doWork(job: Job) {
         ["e", job.request.id],
         ["p", job.request.pubkey],
         getInputTag(job.request),
+        getExpirationTag(job.request) || ["expiration", String(dayjs().add(1, "hour").unix())],
       ].filter(Boolean),
       content: JSON.stringify(events.map((e) => ["e", e.id])),
       created_at: dayjs().unix(),
@@ -173,10 +194,10 @@ jobsSub.on("event", async (event) => {
         job.paymentRequest = invoice.paymentRequest;
         pendingJobs.set(job.request.id, job);
       } catch (e) {
-        console.log(e);
         if (e instanceof Error) {
           appDebug(`Failed to request payment for ${event.id}`);
           console.log(e);
+          await sendError(event, e);
         }
       }
     } catch (e) {
@@ -197,13 +218,14 @@ function checkInvoices() {
         pendingJobs.delete(id);
 
         try {
+          await sendProcessing(job.request, "Building feed");
           await doWork(job);
           previousJobs.set(id, job);
         } catch (e) {
-          if (e instanceof PublicError) await sendError(job.request, e);
-          else if (e instanceof Error) {
+          if (e instanceof Error) {
             appDebug(`Failed to process ${id}`);
             console.log(e);
+            await sendError(job.request, e);
           }
         }
       } else if (status === InvoiceStatus.EXPIRED) pendingJobs.delete(id);

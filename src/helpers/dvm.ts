@@ -3,6 +3,9 @@ import type { Event } from "nostr-tools";
 export function getInputTag(e: Event) {
   return e.tags.find((t) => t[0] === "i");
 }
+export function getExpirationTag(e: Event) {
+  return e.tags.find((t) => t[0] === "expiration");
+}
 
 export function getInput(e: Event) {
   const tag = getInputTag(e);
