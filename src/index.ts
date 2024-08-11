@@ -1,24 +1,26 @@
 #!/usr/bin/env node
 import dayjs from "dayjs";
-import { DMV_CONTENT_REQUEST_KIND, DMV_CONTENT_RESULT_KIND, DMV_STATUS_KIND } from "./const.js";
-import { RELAYS, ensureConnection, pool } from "./pool.js";
-import { Event, finishEvent, getPublicKey } from "nostr-tools";
-import { getExpirationTag, getInput, getInputParam, getInputTag, getRelays } from "./helpers/dvm.js";
-import { appDebug } from "./debug.js";
+import { RELAYS, pool } from "./pool.js";
+import { NostrEvent, finalizeEvent, getPublicKey } from "nostr-tools";
+
 import { NOSTR_PRIVATE_KEY } from "./env.js";
+import { DMV_CONTENT_REQUEST_KIND, DMV_CONTENT_RESULT_KIND, DMV_STATUS_KIND } from "./const.js";
+import { getExpirationTag, getInput, getInputParam, getInputTag, getRelays } from "./helpers/dvm.js";
+import { logger } from "./debug.js";
 import { unique } from "./helpers/array.js";
 import db from "./db.js";
 import lightning from "./lightning/index.js";
 import { InvoiceStatus } from "./lightning/type.js";
+import { Subscription } from "nostr-tools/abstract-relay";
 
 const pubkey = getPublicKey(NOSTR_PRIVATE_KEY);
 
 class PublicError extends Error {}
-async function sendResponse(request: Event<5300>, event: Event) {
+async function sendResponse(request: NostrEvent, event: NostrEvent) {
   pool.publish(unique([...getRelays(request), ...RELAYS]), event).map((p) => p.catch((e) => {}));
 }
-async function sendProcessing(request: Event<5300>, message?: string) {
-  const event = finishEvent(
+async function sendProcessing(request: NostrEvent, message?: string) {
+  const event = finalizeEvent(
     {
       kind: DMV_STATUS_KIND,
       tags: [
@@ -35,8 +37,8 @@ async function sendProcessing(request: Event<5300>, message?: string) {
 
   await sendResponse(request, event);
 }
-async function sendError(request: Event<5300>, error: Error) {
-  const event = finishEvent(
+async function sendError(request: NostrEvent, error: Error) {
+  const event = finalizeEvent(
     {
       kind: DMV_STATUS_KIND,
       tags: [
@@ -53,10 +55,10 @@ async function sendError(request: Event<5300>, error: Error) {
 
   await sendResponse(request, event);
 }
-async function requestPayment(request: Event<5300>, msats: number) {
+async function requestPayment(request: NostrEvent, msats: number) {
   const invoice = await lightning.createInvoice(msats);
 
-  const status = finishEvent(
+  const status = finalizeEvent(
     {
       kind: DMV_STATUS_KIND,
       content: "Please pay the provided invoice",
@@ -85,7 +87,7 @@ enum TimePeriod {
   all = "all",
 }
 type Job = {
-  request: Event<5300>;
+  request: NostrEvent;
   timePeriod: TimePeriod;
   input?: Job;
   paymentRequest?: string;
@@ -95,7 +97,7 @@ type Job = {
 const pendingJobs = new Map<string, Job>();
 const previousJobs = new Map<string, Job>();
 
-async function buildJob(request: Event<5300>): Promise<Job> {
+async function buildJob(request: NostrEvent) {
   const input = getInput(request);
   const timePeriod = (getInputParam(request, "timePeriod") as TimePeriod) || TimePeriod.year;
 
@@ -109,10 +111,11 @@ async function buildJob(request: Event<5300>): Promise<Job> {
     return { input: prevJob, request, timePeriod };
   }
 
-  return { request, timePeriod };
+  const job: Job = { request, timePeriod };
+  return job;
 }
 
-function getMinDate(request: Event, timePeriod: TimePeriod) {
+function getMinDate(request: NostrEvent, timePeriod: TimePeriod) {
   if (timePeriod === TimePeriod.all) return 0;
 
   let startDate = dayjs.unix(request.created_at);
@@ -130,7 +133,7 @@ function getMinDate(request: Event, timePeriod: TimePeriod) {
   }
 }
 async function doWork(job: Job) {
-  appDebug(`Starting work for ${job.request.id}`);
+  logger(`Starting work for ${job.request.id}`);
 
   let page = 0;
 
@@ -151,9 +154,9 @@ async function doWork(job: Job) {
 
   if (rows.length === 0) throw new PublicError("No events left");
 
-  const events = rows.map((r) => JSON.parse(r.content) as Event<1>);
+  const events = rows.map((r) => JSON.parse(r.content) as NostrEvent);
 
-  const result = finishEvent(
+  const result = finalizeEvent(
     {
       kind: DMV_CONTENT_RESULT_KIND,
       tags: [
@@ -169,48 +172,38 @@ async function doWork(job: Job) {
     NOSTR_PRIVATE_KEY,
   );
 
-  appDebug(`Returning page ${page} to ${job.request.id}`);
+  logger(`Returning page ${page} to ${job.request.id}`);
   await sendResponse(job.request, result);
 }
 
-appDebug("Publishing relay list");
-await pool.publish(
-  [...RELAYS, "wss://purplepag.es"],
-  finishEvent(
-    { kind: 10002, content: "", tags: RELAYS.map((r) => ["r", r]), created_at: dayjs().unix() },
-    NOSTR_PRIVATE_KEY,
-  ),
-);
-
-const jobsSub = pool.sub(RELAYS, [{ kinds: [DMV_CONTENT_REQUEST_KIND], since: dayjs().unix(), "#p": [pubkey] }]);
-jobsSub.on("event", async (event) => {
+async function handleJobEvent(event: NostrEvent) {
   if (event.kind === DMV_CONTENT_REQUEST_KIND && !pendingJobs.has(event.id) && !previousJobs.has(event.id)) {
     try {
       const job = await buildJob(event);
       try {
-        appDebug(`Requesting payment for ${job.request.id}`);
+        logger(`Requesting payment for ${job.request.id}`);
         const invoice = await requestPayment(job.request, 10 * 1000);
         job.paymentHash = invoice.paymentHash;
         job.paymentRequest = invoice.paymentRequest;
         pendingJobs.set(job.request.id, job);
       } catch (e) {
         if (e instanceof Error) {
-          appDebug(`Failed to request payment for ${event.id}`);
+          logger(`Failed to request payment for ${event.id}`);
           console.log(e);
           await sendError(event, e);
         }
       }
     } catch (e) {
       if (e instanceof PublicError) await sendError(event, e);
-      else if (e instanceof Error) appDebug(`Skipped request ${event.id} because`, e.message);
+      else if (e instanceof Error) logger(`Skipped request ${event.id} because`, e.message);
     }
   }
-});
+}
 
 function checkInvoices() {
   for (let [id, job] of pendingJobs) {
     if (!job.paymentHash) pendingJobs.delete(id);
-    appDebug(`Checking payment for ${id}`);
+    logger(`Checking payment for ${id}`);
 
     lightning.getInvoiceStatus(job.paymentHash).then(async (status) => {
       if (status === InvoiceStatus.PAID) {
@@ -223,7 +216,7 @@ function checkInvoices() {
           previousJobs.set(id, job);
         } catch (e) {
           if (e instanceof Error) {
-            appDebug(`Failed to process ${id}`);
+            logger(`Failed to process ${id}`);
             console.log(e);
             await sendError(job.request, e);
           }
@@ -232,11 +225,45 @@ function checkInvoices() {
     });
   }
 }
+
 setInterval(checkInvoices, 5 * 1000);
 
-setInterval(ensureConnection, 1000 * 30);
+const subscriptions = new Map<string, Subscription>();
+async function subscribeToRelays() {
+  for (const url of RELAYS) {
+    const sub = subscriptions.get(url);
+
+    // open new subscription if closed or missing
+    if (!sub || sub.closed) {
+      logger(`Opening subscription to ${url}`);
+      const relay = await pool.ensureRelay(url);
+
+      relay.subscribe([{ kinds: [DMV_CONTENT_REQUEST_KIND], since: dayjs().unix(), "#p": [pubkey] }], {
+        onevent: handleJobEvent,
+        onclose: () => {
+          logger(`Subscription to ${url} closed`);
+        },
+      });
+    }
+  }
+}
+
+logger("Publishing relay list");
+await pool.publish(
+  [...RELAYS, "wss://purplepag.es"],
+  finalizeEvent(
+    { kind: 10002, content: "", tags: RELAYS.map((r) => ["r", r]), created_at: dayjs().unix() },
+    NOSTR_PRIVATE_KEY,
+  ),
+);
+
+logger("Listening for jobs");
+await subscribeToRelays();
+setInterval(subscribeToRelays, 1000 * 30);
 
 async function shutdown() {
+  for (const [_, sub] of subscriptions) sub.close();
+
   process.exit();
 }
 process.on("SIGINT", shutdown);

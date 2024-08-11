@@ -6,12 +6,4 @@ import { NOSTR_RELAYS } from "./env.js";
 global.WebSocket = WebSocket;
 
 export const pool = new SimplePool();
-export const RELAYS = NOSTR_RELAYS?.split(",") ?? [];
-
-export function ensureConnection() {
-  return Promise.all(
-    RELAYS.map((url) => {
-      return pool.ensureRelay(url);
-    }),
-  );
-}
+export const RELAYS = NOSTR_RELAYS?.split(",").map((r) => r.trim()) ?? [];

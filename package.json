@@ -13,30 +13,32 @@
   ],
   "scripts": {
     "build": "rm -rf build && tsc",
-    "dev": "node development.mjs",
+    "dev": "nodemon -i '**/data/**' --exec 'node' --loader @swc-node/register/esm src/index.ts",
     "start": "node build/index.js",
     "format": "prettier -w . --ignore-path .gitignore",
-    "prepare": "tsc",
+    "prepublish": "tsc",
     "support": "npx @getalby/pkgzap-cli"
   },
   "dependencies": {
-    "dayjs": "^1.11.10",
-    "debug": "^4.3.4",
-    "dotenv": "^16.3.1",
-    "lowdb": "^6.1.1",
-    "nanoid": "^5.0.4",
-    "nostr-tools": "^1.17.0",
+    "dayjs": "^1.11.12",
+    "debug": "^4.3.6",
+    "dotenv": "^16.4.5",
+    "lowdb": "^7.0.1",
+    "nanoid": "^5.0.7",
+    "nostr-tools": "^2.7.2",
     "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.6",
-    "ws": "^8.15.1"
+    "sqlite3": "^5.1.7",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@noble/hashes": "^1.4.0",
+    "@swc-node/register": "^1.10.9",
+    "@swc/core": "^1.7.10",
     "@types/debug": "^4.1.12",
     "@types/node": "^20.10.5",
-    "nodemon": "^3.0.2",
-    "prettier": "^3.1.1",
-    "shelljs": "^0.8.5",
-    "typescript": "^5.3.3"
+    "nodemon": "^3.1.4",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
   },
   "funding": {
     "type": "lightning",
