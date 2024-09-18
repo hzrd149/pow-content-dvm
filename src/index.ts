@@ -56,6 +56,7 @@ async function sendError(request: NostrEvent, error: Error) {
   await sendResponse(request, event);
 }
 async function requestPayment(request: NostrEvent, msats: number) {
+  if (!lightning) throw new Error("Missing lightning backend");
   const invoice = await lightning.createInvoice(msats);
 
   const status = finalizeEvent(
@@ -135,6 +136,9 @@ function getMinDate(request: NostrEvent, timePeriod: TimePeriod) {
 async function doWork(job: Job) {
   logger(`Starting work for ${job.request.id}`);
 
+  previousJobs.set(job.request.id, job);
+  await sendProcessing(job.request, "Building feed");
+
   let page = 0;
 
   // add 50 to the offset for each previous job
@@ -156,16 +160,21 @@ async function doWork(job: Job) {
 
   const events = rows.map((r) => JSON.parse(r.content) as NostrEvent);
 
+  const tags: string[][] = [
+    ["request", JSON.stringify(job.request)],
+    ["e", job.request.id],
+    ["p", job.request.pubkey],
+  ];
+
+  const inputTag = getInputTag(job.request);
+  if (inputTag) tags.push(inputTag);
+
+  tags.push(getExpirationTag(job.request) || ["expiration", String(dayjs().add(1, "hour").unix())]);
+
   const result = finalizeEvent(
     {
       kind: DMV_CONTENT_RESULT_KIND,
-      tags: [
-        ["request", JSON.stringify(job.request)],
-        ["e", job.request.id],
-        ["p", job.request.pubkey],
-        getInputTag(job.request),
-        getExpirationTag(job.request) || ["expiration", String(dayjs().add(1, "hour").unix())],
-      ].filter(Boolean),
+      tags,
       content: JSON.stringify(events.map((e) => ["e", e.id])),
       created_at: dayjs().unix(),
     },
@@ -185,14 +194,18 @@ async function handleJobEvent(event: NostrEvent) {
     try {
       const job = await buildJob(event);
       try {
-        logger(`Requesting payment for ${job.request.id}`);
-        const invoice = await requestPayment(job.request, 10 * 1000);
-        job.paymentHash = invoice.paymentHash;
-        job.paymentRequest = invoice.paymentRequest;
-        pendingJobs.set(job.request.id, job);
+        if (lightning) {
+          logger(`Requesting payment for ${job.request.id}`);
+          const invoice = await requestPayment(job.request, 10 * 1000);
+          job.paymentHash = invoice.paymentHash;
+          job.paymentRequest = invoice.paymentRequest;
+          pendingJobs.set(job.request.id, job);
+        } else {
+          await doWork(job);
+        }
       } catch (e) {
         if (e instanceof Error) {
-          logger(`Failed to request payment for ${event.id}`);
+          logger(`Failed to process ${event.id}`);
           console.log(e);
           await sendError(event, e);
         }
@@ -205,8 +218,13 @@ async function handleJobEvent(event: NostrEvent) {
 }
 
 function checkInvoices() {
+  if (!lightning) return;
+
   for (let [id, job] of pendingJobs) {
-    if (!job.paymentHash) pendingJobs.delete(id);
+    if (!job.paymentHash) {
+      pendingJobs.delete(id);
+      continue;
+    }
     logger(`Checking payment for ${id}`);
 
     lightning.getInvoiceStatus(job.paymentHash).then(async (status) => {
@@ -215,9 +233,7 @@ function checkInvoices() {
         pendingJobs.delete(id);
 
         try {
-          await sendProcessing(job.request, "Building feed");
           await doWork(job);
-          previousJobs.set(id, job);
         } catch (e) {
           if (e instanceof Error) {
             logger(`Failed to process ${id}`);

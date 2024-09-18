@@ -4,8 +4,9 @@ import { hexToBytes } from "@noble/hashes/utils";
 const SQLITE_DB = process.env.SQLITE_DB;
 if (!SQLITE_DB) throw new Error("Missing SQLITE_DB");
 
-const NOSTR_PRIVATE_KEY = process.env.NOSTR_PRIVATE_KEY ? hexToBytes(process.env.NOSTR_PRIVATE_KEY) : undefined;
-if (!NOSTR_PRIVATE_KEY) throw new Error("Missing NOSTR_PRIVATE_KEY");
+const NOSTR_PRIVATE_KEY_VALUE = process.env.NOSTR_PRIVATE_KEY ? hexToBytes(process.env.NOSTR_PRIVATE_KEY) : undefined;
+if (!NOSTR_PRIVATE_KEY_VALUE) throw new Error("Missing NOSTR_PRIVATE_KEY");
+const NOSTR_PRIVATE_KEY = NOSTR_PRIVATE_KEY_VALUE;
 
 // lnbits
 const LNBITS_URL = process.env.LNBITS_URL;
