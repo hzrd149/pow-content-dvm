@@ -231,19 +231,21 @@ setInterval(checkInvoices, 5 * 1000);
 const subscriptions = new Map<string, Subscription>();
 async function subscribeToRelays() {
   for (const url of RELAYS) {
-    const sub = subscriptions.get(url);
+    let sub = subscriptions.get(url);
 
     // open new subscription if closed or missing
     if (!sub || sub.closed) {
       logger(`Opening subscription to ${url}`);
       const relay = await pool.ensureRelay(url);
 
-      relay.subscribe([{ kinds: [DMV_CONTENT_REQUEST_KIND], since: dayjs().unix(), "#p": [pubkey] }], {
+      sub = relay.subscribe([{ kinds: [DMV_CONTENT_REQUEST_KIND], since: dayjs().unix(), "#p": [pubkey] }], {
         onevent: handleJobEvent,
         onclose: () => {
           logger(`Subscription to ${url} closed`);
         },
       });
+
+      subscriptions.set(url, sub);
     }
   }
 }
