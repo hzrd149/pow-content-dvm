@@ -176,7 +176,11 @@ async function doWork(job: Job) {
   await sendResponse(job.request, result);
 }
 
+const seen = new Set<string>();
 async function handleJobEvent(event: NostrEvent) {
+  if (seen.has(event.id)) return;
+  seen.add(event.id);
+
   if (event.kind === DMV_CONTENT_REQUEST_KIND && !pendingJobs.has(event.id) && !previousJobs.has(event.id)) {
     try {
       const job = await buildJob(event);
